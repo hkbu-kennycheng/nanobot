@@ -1,7 +1,10 @@
 """WhatsApp channel implementation using Node.js bridge."""
 
 import asyncio
+import base64
 import json
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -80,13 +83,33 @@ class WhatsAppChannel(BaseChannel):
         if not self._ws or not self._connected:
             logger.warning("WhatsApp bridge not connected")
             return
-        
+
         try:
-            payload = {
+            media_payloads = []
+            for media_path in (msg.media or []):
+                try:
+                    p = Path(media_path)
+                    if not p.is_file():
+                        logger.warning("Media file not found: {}", media_path)
+                        continue
+                    data = base64.b64encode(p.read_bytes()).decode("ascii")
+                    mimetype = mimetypes.guess_type(media_path)[0] or "application/octet-stream"
+                    media_payloads.append({
+                        "data": data,
+                        "mimetype": mimetype,
+                        "filename": p.name,
+                    })
+                except Exception as e:
+                    logger.error("Failed to read media file {}: {}", media_path, e)
+
+            payload: dict[str, Any] = {
                 "type": "send",
                 "to": msg.chat_id,
-                "text": msg.content
+                "text": msg.content,
             }
+            if media_payloads:
+                payload["media"] = media_payloads
+
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception as e:
             logger.error("Error sending WhatsApp message: {}", e)

@@ -6,10 +6,17 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { WhatsAppClient, InboundMessage } from './whatsapp.js';
 
+interface MediaPayload {
+  data: string;      // base64-encoded file content
+  mimetype: string;  // e.g. "image/png"
+  filename?: string; // optional original filename
+}
+
 interface SendCommand {
   type: 'send';
   to: string;
   text: string;
+  media?: MediaPayload[];
 }
 
 interface BridgeMessage {
@@ -94,7 +101,18 @@ export class BridgeServer {
 
   private async handleCommand(cmd: SendCommand): Promise<void> {
     if (cmd.type === 'send' && this.wa) {
-      await this.wa.sendMessage(cmd.to, cmd.text);
+      // Send media files first
+      if (cmd.media && cmd.media.length > 0) {
+        for (let i = 0; i < cmd.media.length; i++) {
+          const m = cmd.media[i];
+          const buf = Buffer.from(m.data, 'base64');
+          // Attach caption (text) to the last media item
+          const caption = i === cmd.media.length - 1 ? cmd.text : undefined;
+          await this.wa.sendMedia(cmd.to, buf, m.mimetype, m.filename, caption);
+        }
+      } else if (cmd.text) {
+        await this.wa.sendMessage(cmd.to, cmd.text);
+      }
     }
   }
 

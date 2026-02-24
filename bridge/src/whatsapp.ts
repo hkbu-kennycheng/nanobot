@@ -178,6 +178,36 @@ export class WhatsAppClient {
     await this.sock.sendMessage(to, { text });
   }
 
+  async sendMedia(
+    to: string,
+    data: Buffer,
+    mimetype: string,
+    filename?: string,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.sock) {
+      throw new Error('Not connected');
+    }
+
+    const type = mimetype.split('/')[0]; // image, video, audio, etc.
+
+    if (type === 'image') {
+      await this.sock.sendMessage(to, { image: data, caption, mimetype });
+    } else if (type === 'video') {
+      await this.sock.sendMessage(to, { video: data, caption, mimetype });
+    } else if (type === 'audio') {
+      const ptt = mimetype === 'audio/ogg';
+      await this.sock.sendMessage(to, { audio: data, mimetype, ptt });
+    } else {
+      await this.sock.sendMessage(to, {
+        document: data,
+        mimetype,
+        fileName: filename || 'file',
+        caption,
+      });
+    }
+  }
+
   async disconnect(): Promise<void> {
     if (this.sock) {
       this.sock.end(undefined);
