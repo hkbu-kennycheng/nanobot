@@ -91,7 +91,10 @@ class LLMProvider(ABC):
 
         Some models return tool calls as a JSON snippet inside the content
         field instead of populating the structured ``tool_calls`` field.
-        The expected format is::
+
+        Supported formats:
+
+        1. ``Tool Calls:`` prefix followed by a JSON array::
 
             Tool Calls: [
               {
@@ -100,6 +103,11 @@ class LLMProvider(ABC):
                 "function": { "name": "...", "arguments": "..." }
               }
             ]
+
+        2. Inline JSON object(s) with ``name`` and ``arguments`` keys::
+
+            Some text before the call.
+            {"name": "exec", "arguments": {"command": "ls"}}
 
         Returns:
             ``(remaining_content, tool_calls)`` — the text content with the
@@ -110,18 +118,32 @@ class LLMProvider(ABC):
         if not content:
             return content, []
 
+        # Format 1: "Tool Calls: [...]"
         match = re.search(r"Tool Calls:\s*(\[.*)", content, re.DOTALL)
-        if not match:
-            return content, []
+        if match:
+            result = LLMProvider._parse_tool_calls_array(match.group(1))
+            if result:
+                remaining = content[: match.start()].strip()
+                return remaining or None, result
 
-        json_str = match.group(1)
+        # Format 2: inline JSON objects with "name" and "arguments"
+        inline_results = LLMProvider._parse_inline_tool_calls(content)
+        if inline_results:
+            remaining, tool_calls = inline_results
+            return remaining, tool_calls
+
+        return content, []
+
+    @staticmethod
+    def _parse_tool_calls_array(json_str: str) -> list[ToolCallRequest]:
+        """Parse a JSON array of tool calls in the OpenAI structure."""
         try:
             raw_calls = json_repair.loads(json_str)
         except Exception:
-            return content, []
+            return []
 
         if not isinstance(raw_calls, list):
-            return content, []
+            return []
 
         tool_calls: list[ToolCallRequest] = []
         for call in raw_calls:
@@ -149,11 +171,102 @@ class LLMProvider(ABC):
                     arguments=args if isinstance(args, dict) else {},
                 )
             )
+        return tool_calls
+
+    @staticmethod
+    def _extract_json_object(text: str, start: int) -> str | None:
+        """Extract a complete JSON object from *text* beginning at *start*.
+
+        Uses brace-counting (aware of JSON string literals) so that nested
+        objects like ``{"name": "x", "arguments": {"a": "b"}}`` are captured
+        correctly.
+        """
+        if start >= len(text) or text[start] != "{":
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                if in_string:
+                    escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
+
+    @staticmethod
+    def _parse_inline_tool_calls(
+        content: str,
+    ) -> tuple[str | None, list[ToolCallRequest]] | None:
+        """Parse inline JSON tool calls like ``{"name": "...", "arguments": {...}}``.
+
+        Scans for JSON objects that contain both ``name`` (str) and
+        ``arguments`` keys.  Multiple inline calls in the same content are
+        supported.  Handles nested braces correctly via brace-counting.
+        """
+        tool_calls: list[ToolCallRequest] = []
+        # Track spans to remove from content (start, end)
+        spans: list[tuple[int, int]] = []
+
+        # Find candidate positions where a JSON object containing "name" starts
+        for m in re.finditer(r'\{\s*"name"\s*:', content):
+            raw = LLMProvider._extract_json_object(content, m.start())
+            if raw is None:
+                continue
+            try:
+                obj = json_repair.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            name = obj.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            if "arguments" not in obj:
+                continue
+
+            args = obj.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json_repair.loads(args)
+                except Exception:
+                    args = {"raw": args}
+
+            tool_calls.append(
+                ToolCallRequest(
+                    id=f"content_tc_{len(tool_calls)}",
+                    name=name,
+                    arguments=args if isinstance(args, dict) else {},
+                )
+            )
+            spans.append((m.start(), m.start() + len(raw)))
 
         if not tool_calls:
-            return content, []
+            return None
 
-        remaining = content[: match.start()].strip()
+        # Remove matched JSON spans from content
+        remaining_parts: list[str] = []
+        prev_end = 0
+        for start, end in spans:
+            remaining_parts.append(content[prev_end:start])
+            prev_end = end
+        remaining_parts.append(content[prev_end:])
+        remaining = "".join(remaining_parts).strip()
+
         return remaining or None, tool_calls
 
     @abstractmethod
