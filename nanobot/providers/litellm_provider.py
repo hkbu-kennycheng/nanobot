@@ -234,7 +234,7 @@ class LiteLLMProvider(LLMProvider):
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         message = choice.message
-        
+
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
@@ -242,13 +242,19 @@ class LiteLLMProvider(LLMProvider):
                 args = tc.function.arguments
                 if isinstance(args, str):
                     args = json_repair.loads(args)
-                
+
                 tool_calls.append(ToolCallRequest(
                     id=tc.id,
                     name=tc.function.name,
                     arguments=args,
                 ))
-        
+
+        content = message.content
+
+        # Some models embed tool calls as JSON text inside content
+        if not tool_calls and content:
+            content, tool_calls = self._parse_tool_calls_from_content(content)
+
         usage = {}
         if hasattr(response, "usage") and response.usage:
             usage = {
@@ -256,11 +262,11 @@ class LiteLLMProvider(LLMProvider):
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
-        
+
         reasoning_content = getattr(message, "reasoning_content", None) or None
-        
+
         return LLMResponse(
-            content=message.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,

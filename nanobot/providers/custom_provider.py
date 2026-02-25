@@ -40,9 +40,15 @@ class CustomProvider(LLMProvider):
                             arguments=json_repair.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments)
             for tc in (msg.tool_calls or [])
         ]
+        content = msg.content
+
+        # Some models embed tool calls as JSON text inside content
+        if not tool_calls and content:
+            content, tool_calls = self._parse_tool_calls_from_content(content)
+
         u = response.usage
         return LLMResponse(
-            content=msg.content, tool_calls=tool_calls, finish_reason=choice.finish_reason or "stop",
+            content=content, tool_calls=tool_calls, finish_reason=choice.finish_reason or "stop",
             usage={"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens, "total_tokens": u.total_tokens} if u else {},
             reasoning_content=getattr(msg, "reasoning_content", None) or None,
         )
